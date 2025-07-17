@@ -21,6 +21,14 @@ rules:
       - list
   - apiGroups:
       - ""
+    resources:
+      - serviceaccounts
+    verbs:
+      - get
+      - watch
+      - list
+  - apiGroups:
+      - ""
       - extensions
       - apps
       - batch

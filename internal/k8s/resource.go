@@ -262,6 +262,21 @@ func (r *GenericResource) GetImagePullSecrets() (secrets []string) {
 	return
 }
 
+// GetServiceAccountName - returns service account name from pod spec
+func (r *GenericResource) GetServiceAccountName() string {
+	switch obj := r.obj.(type) {
+	case *apps_v1.Deployment:
+		return obj.Spec.Template.Spec.ServiceAccountName
+	case *apps_v1.StatefulSet:
+		return obj.Spec.Template.Spec.ServiceAccountName
+	case *apps_v1.DaemonSet:
+		return obj.Spec.Template.Spec.ServiceAccountName
+	case *batch_v1.CronJob:
+		return obj.Spec.JobTemplate.Spec.Template.Spec.ServiceAccountName
+	}
+	return ""
+}
+
 // GetImages - returns images used by this resource
 func (r *GenericResource) GetImages(filter ContainerFilter) (images []string) {
 	switch obj := r.obj.(type) {

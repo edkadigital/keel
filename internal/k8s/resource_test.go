@@ -235,3 +235,38 @@ func TestDaemonsetlSetMultipleContainers(t *testing.T) {
 		t.Errorf("unexpected image: %s", updated.Spec.Template.Spec.Containers[0].Image)
 	}
 }
+
+func TestGetServiceAccountName(t *testing.T) {
+	d := &apps_v1.Deployment{
+		meta_v1.TypeMeta{},
+		meta_v1.ObjectMeta{
+			Name:        "dep-1",
+			Namespace:   "xxxx",
+			Annotations: map[string]string{},
+			Labels:      map[string]string{},
+		},
+		apps_v1.DeploymentSpec{
+			Template: core_v1.PodTemplateSpec{
+				Spec: core_v1.PodSpec{
+					ServiceAccountName: "my-service-account",
+					Containers: []core_v1.Container{
+						{
+							Image: "gcr.io/v2-namespace/hello-world:1.1.1",
+						},
+					},
+				},
+			},
+		},
+		apps_v1.DeploymentStatus{},
+	}
+
+	gr, err := NewGenericResource(d)
+	if err != nil {
+		t.Fatalf("failed to create generic resource: %s", err)
+	}
+
+	serviceAccountName := gr.GetServiceAccountName()
+	if serviceAccountName != "my-service-account" {
+		t.Errorf("unexpected serviceAccountName: %s", serviceAccountName)
+	}
+}

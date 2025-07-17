@@ -52,7 +52,8 @@ type fakeImplementer struct {
 	// stores value of an updated deployment
 	updated *k8s.GenericResource
 
-	availableSecret *v1.Secret
+	availableSecret         *v1.Secret
+	availableServiceAccount *v1.ServiceAccount
 }
 
 func (i *fakeImplementer) Namespaces() (*v1.NamespaceList, error) {
@@ -74,6 +75,10 @@ func (i *fakeImplementer) Update(obj *k8s.GenericResource) error {
 
 func (i *fakeImplementer) Secret(namespace, name string) (*v1.Secret, error) {
 	return i.availableSecret, nil
+}
+
+func (i *fakeImplementer) ServiceAccount(namespace, name string) (*v1.ServiceAccount, error) {
+	return i.availableServiceAccount, nil
 }
 
 func (i *fakeImplementer) Pods(namespace, labelSelector string) (*v1.PodList, error) {
@@ -313,10 +318,10 @@ func TestGetImpactedInit(t *testing.T) {
 		{
 			meta_v1.TypeMeta{},
 			meta_v1.ObjectMeta{
-				Name:      "dep-1",
-				Namespace: "xxxx",
+				Name:        "dep-1",
+				Namespace:   "xxxx",
 				Annotations: map[string]string{types.KeelInitContainerAnnotation: "true"},
-				Labels:    map[string]string{types.KeelPolicyLabel: "all"},
+				Labels:      map[string]string{types.KeelPolicyLabel: "all"},
 			},
 			apps_v1.DeploymentSpec{
 				Template: v1.PodTemplateSpec{
@@ -334,10 +339,10 @@ func TestGetImpactedInit(t *testing.T) {
 		{
 			meta_v1.TypeMeta{},
 			meta_v1.ObjectMeta{
-				Name:      "dep-2",
-				Namespace: "xxxx",
+				Name:        "dep-2",
+				Namespace:   "xxxx",
 				Annotations: map[string]string{types.KeelInitContainerAnnotation: "false"},
-				Labels:    map[string]string{"whatever": "all"},
+				Labels:      map[string]string{"whatever": "all"},
 			},
 			apps_v1.DeploymentSpec{
 				Template: v1.PodTemplateSpec{
@@ -1644,6 +1649,259 @@ func TestTrackedImagesWithSecrets(t *testing.T) {
 	}
 	if imgs[0].Secrets[1] != "very-secret" {
 		t.Errorf("expected very-secret, got: %s", imgs[0].Secrets[1])
+	}
+}
+
+func TestTrackedImagesWithServiceAccountFallback(t *testing.T) {
+	fp := &fakeImplementer{}
+	fp.namespaces = &v1.NamespaceList{
+		Items: []v1.Namespace{
+			{
+				meta_v1.TypeMeta{},
+				meta_v1.ObjectMeta{Name: "xxxx"},
+				v1.NamespaceSpec{},
+				v1.NamespaceStatus{},
+			},
+		},
+	}
+
+	// Set up a serviceAccount with imagePullSecrets
+	fp.availableServiceAccount = &v1.ServiceAccount{
+		TypeMeta: meta_v1.TypeMeta{},
+		ObjectMeta: meta_v1.ObjectMeta{
+			Name:      "default",
+			Namespace: "xxxx",
+		},
+		ImagePullSecrets: []v1.LocalObjectReference{
+			{
+				Name: "edka-registry-github",
+			},
+		},
+	}
+
+	// Create a deployment WITHOUT imagePullSecrets but WITH serviceAccountName
+	deps := []*apps_v1.Deployment{
+		{
+			meta_v1.TypeMeta{},
+			meta_v1.ObjectMeta{
+				Name:      "dep-1",
+				Namespace: "xxxx",
+				Labels: map[string]string{
+					types.KeelPolicyLabel: "all",
+				},
+			},
+			apps_v1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					Spec: v1.PodSpec{
+						ServiceAccountName: "default",
+						Containers: []v1.Container{
+							{
+								Image: "gcr.io/v2-namespace/hello-world:1.1",
+							},
+						},
+						// No imagePullSecrets specified - should fall back to serviceAccount
+					},
+				},
+			},
+			apps_v1.DeploymentStatus{},
+		},
+	}
+
+	grs := MustParseGRS(deps)
+	grc := &k8s.GenericResourceCache{}
+	grc.Add(grs...)
+
+	approver, teardown := approver()
+	defer teardown()
+	provider, err := NewProvider(fp, &fakeSender{}, approver, grc)
+	if err != nil {
+		t.Fatalf("failed to get provider: %s", err)
+	}
+
+	imgs, err := provider.TrackedImages()
+	if err != nil {
+		t.Errorf("failed to get image: %s", err)
+	}
+	if len(imgs) != 1 {
+		t.Errorf("expected to find 1 image, got: %d", len(imgs))
+	}
+
+	if len(imgs[0].Secrets) != 1 {
+		t.Errorf("expected 1 secret from serviceAccount fallback, got: %d secrets: %v", len(imgs[0].Secrets), imgs[0].Secrets)
+	}
+
+	if imgs[0].Secrets[0] != "edka-registry-github" {
+		t.Errorf("expected edka-registry-github from serviceAccount fallback, got: %s", imgs[0].Secrets[0])
+	}
+}
+
+func TestTrackedImagesWithDefaultServiceAccountFallback(t *testing.T) {
+	fp := &fakeImplementer{}
+	fp.namespaces = &v1.NamespaceList{
+		Items: []v1.Namespace{
+			{
+				meta_v1.TypeMeta{},
+				meta_v1.ObjectMeta{Name: "xxxx"},
+				v1.NamespaceSpec{},
+				v1.NamespaceStatus{},
+			},
+		},
+	}
+
+	// Set up a "default" serviceAccount with imagePullSecrets
+	fp.availableServiceAccount = &v1.ServiceAccount{
+		TypeMeta: meta_v1.TypeMeta{},
+		ObjectMeta: meta_v1.ObjectMeta{
+			Name:      "default",
+			Namespace: "xxxx",
+		},
+		ImagePullSecrets: []v1.LocalObjectReference{
+			{
+				Name: "default-registry-secret",
+			},
+		},
+	}
+
+	// Create a deployment WITHOUT serviceAccountName (should default to "default")
+	deps := []*apps_v1.Deployment{
+		{
+			meta_v1.TypeMeta{},
+			meta_v1.ObjectMeta{
+				Name:      "dep-1",
+				Namespace: "xxxx",
+				Labels: map[string]string{
+					types.KeelPolicyLabel: "all",
+				},
+			},
+			apps_v1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					Spec: v1.PodSpec{
+						// No serviceAccountName specified - should default to "default"
+						Containers: []v1.Container{
+							{
+								Image: "gcr.io/v2-namespace/hello-world:1.1",
+							},
+						},
+						// No imagePullSecrets specified - should fall back to serviceAccount
+					},
+				},
+			},
+			apps_v1.DeploymentStatus{},
+		},
+	}
+
+	grs := MustParseGRS(deps)
+	grc := &k8s.GenericResourceCache{}
+	grc.Add(grs...)
+
+	approver, teardown := approver()
+	defer teardown()
+	provider, err := NewProvider(fp, &fakeSender{}, approver, grc)
+	if err != nil {
+		t.Fatalf("failed to get provider: %s", err)
+	}
+
+	imgs, err := provider.TrackedImages()
+	if err != nil {
+		t.Errorf("failed to get image: %s", err)
+	}
+	if len(imgs) != 1 {
+		t.Errorf("expected to find 1 image, got: %d", len(imgs))
+	}
+
+	if len(imgs[0].Secrets) != 1 {
+		t.Errorf("expected 1 secret from default serviceAccount fallback, got: %d secrets: %v", len(imgs[0].Secrets), imgs[0].Secrets)
+	}
+
+	if imgs[0].Secrets[0] != "default-registry-secret" {
+		t.Errorf("expected default-registry-secret from default serviceAccount fallback, got: %s", imgs[0].Secrets[0])
+	}
+}
+
+func TestTrackedImagesNoServiceAccountFallbackWhenSecretsExist(t *testing.T) {
+	fp := &fakeImplementer{}
+	fp.namespaces = &v1.NamespaceList{
+		Items: []v1.Namespace{
+			{
+				meta_v1.TypeMeta{},
+				meta_v1.ObjectMeta{Name: "xxxx"},
+				v1.NamespaceSpec{},
+				v1.NamespaceStatus{},
+			},
+		},
+	}
+
+	// Set up a serviceAccount with imagePullSecrets
+	fp.availableServiceAccount = &v1.ServiceAccount{
+		TypeMeta: meta_v1.TypeMeta{},
+		ObjectMeta: meta_v1.ObjectMeta{
+			Name:      "default",
+			Namespace: "xxxx",
+		},
+		ImagePullSecrets: []v1.LocalObjectReference{
+			{
+				Name: "serviceaccount-secret",
+			},
+		},
+	}
+
+	// Create a deployment WITH imagePullSecrets - should NOT fall back to serviceAccount
+	deps := []*apps_v1.Deployment{
+		{
+			meta_v1.TypeMeta{},
+			meta_v1.ObjectMeta{
+				Name:      "dep-1",
+				Namespace: "xxxx",
+				Labels: map[string]string{
+					types.KeelPolicyLabel: "all",
+				},
+			},
+			apps_v1.DeploymentSpec{
+				Template: v1.PodTemplateSpec{
+					Spec: v1.PodSpec{
+						ServiceAccountName: "default",
+						Containers: []v1.Container{
+							{
+								Image: "gcr.io/v2-namespace/hello-world:1.1",
+							},
+						},
+						ImagePullSecrets: []v1.LocalObjectReference{
+							{
+								Name: "deployment-secret",
+							},
+						},
+					},
+				},
+			},
+			apps_v1.DeploymentStatus{},
+		},
+	}
+
+	grs := MustParseGRS(deps)
+	grc := &k8s.GenericResourceCache{}
+	grc.Add(grs...)
+
+	approver, teardown := approver()
+	defer teardown()
+	provider, err := NewProvider(fp, &fakeSender{}, approver, grc)
+	if err != nil {
+		t.Fatalf("failed to get provider: %s", err)
+	}
+
+	imgs, err := provider.TrackedImages()
+	if err != nil {
+		t.Errorf("failed to get image: %s", err)
+	}
+	if len(imgs) != 1 {
+		t.Errorf("expected to find 1 image, got: %d", len(imgs))
+	}
+
+	if len(imgs[0].Secrets) != 1 {
+		t.Errorf("expected 1 secret from deployment (not serviceAccount), got: %d secrets: %v", len(imgs[0].Secrets), imgs[0].Secrets)
+	}
+
+	if imgs[0].Secrets[0] != "deployment-secret" {
+		t.Errorf("expected deployment-secret (not serviceAccount fallback), got: %s", imgs[0].Secrets[0])
 	}
 }
 

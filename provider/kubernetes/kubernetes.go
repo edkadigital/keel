@@ -252,6 +252,43 @@ func (p *Provider) TrackedImages() ([]*types.TrackedImage, error) {
 		}
 		secrets = append(secrets, gr.GetImagePullSecrets()...)
 
+		// fallback to serviceAccount imagePullSecrets if no imagePullSecrets specified
+		if len(secrets) == 0 {
+			serviceAccountName := gr.GetServiceAccountName()
+			// If no serviceAccountName is specified, Kubernetes defaults to "default"
+			if serviceAccountName == "" {
+				serviceAccountName = "default"
+			}
+
+			serviceAccount, err := p.implementer.ServiceAccount(gr.Namespace, serviceAccountName)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"error":              err,
+					"namespace":          gr.Namespace,
+					"serviceAccountName": serviceAccountName,
+					"resource":           gr.Identifier,
+				}).Debug("provider.kubernetes: failed to get serviceAccount for imagePullSecrets fallback")
+			} else {
+				log.WithFields(log.Fields{
+					"namespace":          gr.Namespace,
+					"serviceAccountName": serviceAccountName,
+					"resource":           gr.Identifier,
+					"imagePullSecrets":   serviceAccount.ImagePullSecrets,
+				}).Debug("provider.kubernetes: found serviceAccount, checking for imagePullSecrets")
+				for _, secret := range serviceAccount.ImagePullSecrets {
+					secrets = append(secrets, secret.Name)
+				}
+				if len(secrets) > 0 {
+					log.WithFields(log.Fields{
+						"namespace":          gr.Namespace,
+						"serviceAccountName": serviceAccountName,
+						"resource":           gr.Identifier,
+						"secrets":            secrets,
+					}).Debug("provider.kubernetes: using serviceAccount imagePullSecrets as fallback")
+				}
+			}
+		}
+
 		filterFunc := GetMonitorContainersFromMeta(annotations, labels)
 
 		images := gr.GetImages(filterFunc)
@@ -280,6 +317,13 @@ func (p *Provider) TrackedImages() ([]*types.TrackedImage, error) {
 				}
 			}
 
+			log.WithFields(log.Fields{
+				"namespace": gr.Namespace,
+				"resource":  gr.Identifier,
+				"image":     ref.String(),
+				"secrets":   secrets,
+			}).Debug("provider.kubernetes: creating TrackedImage with secrets")
+			
 			trackedImages = append(trackedImages, &types.TrackedImage{
 				Image:        ref,
 				PollSchedule: schedule,

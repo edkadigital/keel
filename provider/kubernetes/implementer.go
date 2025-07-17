@@ -3,6 +3,7 @@ package kubernetes
 import (
 	"context"
 	"fmt"
+
 	"github.com/keel-hq/keel/internal/k8s"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -24,6 +25,7 @@ type Implementer interface {
 	Deployments(namespace string) (*apps_v1.DeploymentList, error)
 	Update(obj *k8s.GenericResource) error
 	Secret(namespace, name string) (*v1.Secret, error)
+	ServiceAccount(namespace, name string) (*v1.ServiceAccount, error)
 	Pods(namespace, labelSelector string) (*v1.PodList, error)
 	DeletePod(namespace, name string, opts *meta_v1.DeleteOptions) error
 
@@ -159,6 +161,11 @@ func (i *KubernetesImplementer) Update(obj *k8s.GenericResource) error {
 // Secret - get secret
 func (i *KubernetesImplementer) Secret(namespace, name string) (*v1.Secret, error) {
 	return i.client.CoreV1().Secrets(namespace).Get(context.TODO(), name, meta_v1.GetOptions{})
+}
+
+// ServiceAccount - get service account
+func (i *KubernetesImplementer) ServiceAccount(namespace, name string) (*v1.ServiceAccount, error) {
+	return i.client.CoreV1().ServiceAccounts(namespace).Get(context.TODO(), name, meta_v1.GetOptions{})
 }
 
 // Pods - get pods
